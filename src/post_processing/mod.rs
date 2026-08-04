@@ -129,10 +129,7 @@ pub(crate) fn create_pipeline(
     shader: Handle<Shader>,
     shader_definitions: Vec<ShaderDefVal>,
 ) -> CachedRenderPipelineId {
-    let shared_layout = world
-        .resource::<PostProcessingSharedLayout>()
-        .shared_layout
-        .clone();
+    let shared_layout = shared_layout();
     let descriptor = render_pipeline_descriptor(
         world,
         label,
@@ -162,12 +159,10 @@ pub(crate) struct PostProcessingSharedLayout {
     shared_layout: BindGroupLayoutDescriptor,
 }
 
-impl FromWorld for PostProcessingSharedLayout {
-    fn from_world(world: &mut World) -> Self {
-        let _ = world;
-        let shared_layout = BindGroupLayoutDescriptor::new(
-            "PostProcessing texture bind group layout",
-            &[
+fn shared_layout() -> BindGroupLayoutDescriptor {
+    BindGroupLayoutDescriptor::new(
+        "PostProcessing texture bind group layout",
+        &[
                 BindGroupLayoutEntry {
                     binding: 0,
                     visibility: ShaderStages::FRAGMENT,
@@ -194,8 +189,13 @@ impl FromWorld for PostProcessingSharedLayout {
                     },
                     count: None,
                 },
-            ],
-        );
+        ],
+    )
+}
+
+impl FromWorld for PostProcessingSharedLayout {
+    fn from_world(_world: &mut World) -> Self {
+        let shared_layout = shared_layout();
         Self { shared_layout }
     }
 }

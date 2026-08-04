@@ -1,5 +1,16 @@
-#import bevy_core_pipeline::fullscreen_vertex_shader
-#import bevy_render::globals
+struct FullscreenVertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+struct Globals {
+    time: f32,
+    delta_time: f32,
+    frame_count: u32,
+#ifdef SIXTEEN_BYTE_ALIGNMENT
+    _webgl2_padding: f32
+#endif
+};
 
 const PI: f32 = 3.141592653589793;
 

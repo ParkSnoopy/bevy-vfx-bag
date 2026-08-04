@@ -27,6 +27,7 @@ impl Plugin for SaneDefaultsPlugin {
         app.add_plugins(
             DefaultPlugins
                 .set(AssetPlugin {
+                    file_path: concat!(env!("CARGO_MANIFEST_DIR"), "/assets").to_string(),
                     watch_for_changes_override: Some(true),
                     ..default()
                 })
