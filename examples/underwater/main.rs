@@ -3,30 +3,27 @@ mod examples_common;
 
 use bevy::prelude::*;
 use bevy_vfx_bag::{
+    BevyVfxBagPlugin,
     post_processing::{
         chromatic_aberration::ChromaticAberration, lut::Lut, masks::Mask, raindrops::Raindrops,
         wave::Wave,
     },
-    BevyVfxBagPlugin,
 };
 
 fn main() {
     let mut app = App::new();
 
-    app.add_plugin(examples_common::SaneDefaultsPlugin)
-        .add_plugin(examples_common::ShapesExamplePlugin::without_3d_camera())
-        .add_plugin(BevyVfxBagPlugin::default())
-        .add_startup_system(startup)
+    app.add_plugins(examples_common::SaneDefaultsPlugin)
+        .add_plugins(examples_common::ShapesExamplePlugin::without_3d_camera())
+        .add_plugins(BevyVfxBagPlugin::default())
+        .add_systems(Startup, startup)
         .run();
 }
 
 fn startup(mut commands: Commands) {
     commands.spawn((
-        Camera3dBundle {
-            transform: Transform::from_xyz(0.0, 6., 12.0)
-                .looking_at(Vec3::new(0., 1., 0.), Vec3::Y),
-            ..default()
-        },
+        Camera3d::default(),
+        Transform::from_xyz(0.0, 6., 12.0).looking_at(Vec3::new(0., 1., 0.), Vec3::Y),
         Raindrops::default(),
         ChromaticAberration {
             magnitude_r: 0.003,

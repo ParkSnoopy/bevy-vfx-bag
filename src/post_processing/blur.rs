@@ -1,35 +1,34 @@
 use std::fmt::Display;
 
 use bevy::{
-    asset::load_internal_asset,
+    asset::{load_internal_asset, uuid_handle},
     ecs::query::QueryItem,
     prelude::*,
-    reflect::TypeUuid,
     render::{
+        GpuResourceAppExt, Render, RenderSystems,
         extract_component::{
             ComponentUniforms, ExtractComponent, ExtractComponentPlugin, UniformComponentPlugin,
         },
-        render_phase::{AddRenderCommand, DrawFunctions, RenderPhase},
         render_resource::{
-            BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutEntry,
-            BindingType, BufferBindingType, CachedRenderPipelineId, ShaderStages, ShaderType,
+            BindGroupEntry, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingType,
+            BufferBindingType, CachedRenderPipelineId, PipelineCache, ShaderStages, ShaderType,
         },
         renderer::RenderDevice,
-        RenderSet,
+        sync_component::SyncComponent,
     },
+    shader::Shader,
 };
 
-use crate::post_processing::{DrawPostProcessingEffect, UniformBindGroup};
+use super::Order;
+use crate::post_processing::UniformBindGroup;
 
-use super::{Order, PostProcessingPhaseItem};
-
-pub(crate) const BLUR_SHADER_HANDLE: HandleUntyped =
-    HandleUntyped::weak_from_u64(Shader::TYPE_UUID, 11044253213698850613);
+pub(crate) const BLUR_SHADER_HANDLE: Handle<Shader> =
+    uuid_handle!("00000000-0000-0000-9945-11c86bfc7f35");
 
 #[derive(Resource)]
 pub(crate) struct BlurData {
     pub pipeline_id: CachedRenderPipelineId,
-    pub uniform_layout: BindGroupLayout,
+    pub uniform_layout: BindGroupLayoutDescriptor,
 }
 
 impl FromWorld for BlurData {
@@ -47,7 +46,7 @@ impl FromWorld for BlurData {
                 visibility: ShaderStages::FRAGMENT,
                 count: None,
             }],
-            BLUR_SHADER_HANDLE.typed(),
+            BLUR_SHADER_HANDLE.clone(),
         );
 
         BlurData {
@@ -68,44 +67,21 @@ impl bevy::prelude::Plugin for Plugin {
         );
 
         // This puts the uniform into the render world.
-        app.add_plugin(ExtractComponentPlugin::<Blur>::default())
-            .add_plugin(UniformComponentPlugin::<Blur>::default());
+        app.add_plugins((
+            ExtractComponentPlugin::<Blur>::default(),
+            UniformComponentPlugin::<Blur>::default(),
+        ));
 
         super::render_app(app)
-            .add_system(
-                super::extract_post_processing_camera_phases::<Blur>.in_schedule(ExtractSchedule),
-            )
-            .init_resource::<BlurData>()
+            .init_gpu_resource::<BlurData>()
             .init_resource::<UniformBindGroup<Blur>>()
-            .add_system(prepare.in_set(RenderSet::Prepare))
-            .add_system(queue.in_set(RenderSet::Queue))
-            .add_render_command::<PostProcessingPhaseItem, DrawPostProcessingEffect<Blur>>();
-    }
-}
-
-fn prepare(
-    data: Res<BlurData>,
-    mut views: Query<(
-        Entity,
-        &mut RenderPhase<PostProcessingPhaseItem>,
-        &Order<Blur>,
-    )>,
-    draw_functions: Res<DrawFunctions<PostProcessingPhaseItem>>,
-) {
-    for (entity, mut phase, order) in views.iter_mut() {
-        let draw_function = draw_functions.read().id::<DrawPostProcessingEffect<Blur>>();
-
-        phase.add(PostProcessingPhaseItem {
-            entity,
-            sort_key: (*order).into(),
-            draw_function,
-            pipeline_id: data.pipeline_id,
-        });
+            .add_systems(Render, queue.in_set(RenderSystems::PrepareBindGroups));
     }
 }
 
 fn queue(
     render_device: Res<RenderDevice>,
+    pipeline_cache: Res<PipelineCache>,
     data: Res<BlurData>,
     mut bind_group: ResMut<UniformBindGroup<Blur>>,
     uniforms: Res<ComponentUniforms<Blur>>,
@@ -113,16 +89,16 @@ fn queue(
 ) {
     bind_group.inner = None;
 
-    if let Some(uniforms) = uniforms.binding() {
+    if let Some(uniforms) = uniforms.uniforms().binding() {
         if !views.is_empty() {
-            bind_group.inner = Some(render_device.create_bind_group(&BindGroupDescriptor {
-                label: Some("Blur Uniform Bind Group"),
-                layout: &data.uniform_layout,
-                entries: &[BindGroupEntry {
+            bind_group.inner = Some(render_device.create_bind_group(
+                "Blur Uniform Bind Group",
+                &pipeline_cache.get_bind_group_layout(&data.uniform_layout),
+                &[BindGroupEntry {
                     binding: 0,
                     resource: uniforms.clone(),
                 }],
-            }));
+            ));
         }
     }
 }
@@ -161,15 +137,17 @@ impl Display for Blur {
 }
 
 impl ExtractComponent for Blur {
-    type Query = (&'static Self, &'static Camera);
-    type Filter = ();
-    type Out = Self;
+    type QueryData = (&'static Self, Option<&'static Order<Self>>);
+    type QueryFilter = ();
+    type Out = (Self, Order<Self>);
 
-    fn extract_component((settings, camera): QueryItem<'_, Self::Query>) -> Option<Self::Out> {
-        if !camera.is_active {
-            return None;
-        }
-
-        Some(*settings)
+    fn extract_component(
+        (settings, order): QueryItem<'_, '_, Self::QueryData>,
+    ) -> Option<Self::Out> {
+        Some((*settings, order.copied().unwrap_or_else(|| Order::new(0.0))))
     }
+}
+
+impl SyncComponent for Blur {
+    type Target = (Self, Order<Self>);
 }

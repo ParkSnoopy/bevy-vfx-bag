@@ -3,40 +3,38 @@ use std::fmt::Display;
 use bevy::render::{
     extract_resource::{ExtractResource, ExtractResourcePlugin},
     render_asset::RenderAssets,
-    render_phase::AddRenderCommand,
     render_resource::{
         AddressMode, BindingResource, Sampler, SamplerBindingType, SamplerDescriptor,
         TextureSampleType, TextureViewDimension,
     },
-    texture::{CompressedImageFormats, ImageType},
-    RenderSet,
+    texture::GpuImage,
 };
 pub(crate) use bevy::{
-    asset::load_internal_asset,
+    asset::{RenderAssetUsages, load_internal_asset, uuid_handle},
     ecs::query::QueryItem,
+    image::{CompressedImageFormats, ImageSampler, ImageType},
     prelude::*,
-    reflect::TypeUuid,
     render::{
+        GpuResourceAppExt, Render, RenderSystems,
         extract_component::{
             ComponentUniforms, ExtractComponent, ExtractComponentPlugin, UniformComponentPlugin,
         },
-        render_phase::{DrawFunctions, RenderPhase},
         render_resource::{
-            BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutEntry,
-            BindingType, BufferBindingType, CachedRenderPipelineId, ShaderStages, ShaderType,
+            BindGroupEntry, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingType,
+            BufferBindingType, CachedRenderPipelineId, PipelineCache, ShaderStages, ShaderType,
         },
         renderer::RenderDevice,
+        sync_component::SyncComponent,
     },
+    shader::Shader,
 };
 
-use crate::post_processing::{DrawPostProcessingEffect, UniformBindGroup};
+use super::Order;
+use crate::post_processing::UniformBindGroup;
 
-use super::{Order, PostProcessingPhaseItem};
-
-pub(crate) const RAINDROPS_SHADER_HANDLE: HandleUntyped =
-    HandleUntyped::weak_from_u64(Shader::TYPE_UUID, 3481202994982538867);
-const RAINDROPS_IMAGE_HANDLE: HandleUntyped =
-    HandleUntyped::weak_from_u64(Image::TYPE_UUID, 10600833861652934799);
+pub(crate) const RAINDROPS_SHADER_HANDLE: Handle<Shader> =
+    uuid_handle!("00000000-0000-0000-304f-b7ae02f5ce73");
+const RAINDROPS_IMAGE_HANDLE: Handle<Image> = uuid_handle!("00000000-0000-0000-931d-ba3b46c1708f");
 
 #[derive(Resource, ExtractResource, Deref, DerefMut, Clone)]
 struct RaindropsTextureHandle(Handle<Image>);
@@ -44,7 +42,7 @@ struct RaindropsTextureHandle(Handle<Image>);
 #[derive(Resource)]
 pub(crate) struct RaindropsData {
     pub pipeline_id: CachedRenderPipelineId,
-    pub layout: BindGroupLayout,
+    pub layout: BindGroupLayoutDescriptor,
     pub sampler: Sampler,
 }
 
@@ -81,7 +79,7 @@ impl FromWorld for RaindropsData {
                     count: None,
                 },
             ],
-            RAINDROPS_SHADER_HANDLE.typed(),
+            RAINDROPS_SHADER_HANDLE.clone(),
         );
 
         let raindrops_sampler = world
@@ -117,7 +115,7 @@ impl bevy::prelude::Plugin for Plugin {
             Shader::from_wgsl
         );
 
-        let mut assets = app.world.resource_mut::<Assets<_>>();
+        let mut assets = app.world_mut().resource_mut::<Assets<_>>();
 
         let image = Image::from_buffer(
             include_bytes!(concat!(
@@ -128,73 +126,49 @@ impl bevy::prelude::Plugin for Plugin {
             ImageType::Extension("tga"),
             CompressedImageFormats::NONE,
             false,
+            ImageSampler::Default,
+            RenderAssetUsages::default(),
         )
         .expect("Should load raindrops successfully");
-        assets.set_untracked(RAINDROPS_IMAGE_HANDLE, image);
+        assets
+            .insert(RAINDROPS_IMAGE_HANDLE.id(), image)
+            .expect("UUID handles are valid");
 
         // This puts the uniform into the render world.
-        app.add_plugin(ExtractComponentPlugin::<Raindrops>::default())
-            .add_plugin(UniformComponentPlugin::<Raindrops>::default())
-            .add_plugin(ExtractResourcePlugin::<RaindropsTextureHandle>::default())
-            .insert_resource(RaindropsTextureHandle(
-                RAINDROPS_IMAGE_HANDLE.clone_weak().typed(),
-            ));
+        app.add_plugins((
+            ExtractComponentPlugin::<Raindrops>::default(),
+            UniformComponentPlugin::<Raindrops>::default(),
+            ExtractResourcePlugin::<RaindropsTextureHandle>::default(),
+        ))
+        .insert_resource(RaindropsTextureHandle(RAINDROPS_IMAGE_HANDLE.clone()));
 
         super::render_app(app)
-            .add_system(
-                super::extract_post_processing_camera_phases::<Raindrops>
-                    .in_schedule(ExtractSchedule),
-            )
-            .init_resource::<RaindropsData>()
+            .init_gpu_resource::<RaindropsData>()
             .init_resource::<UniformBindGroup<Raindrops>>()
-            .add_system(prepare.in_set(RenderSet::Prepare))
-            .add_system(queue.in_set(RenderSet::Queue))
-            .add_render_command::<PostProcessingPhaseItem, DrawPostProcessingEffect<Raindrops>>();
-    }
-}
-
-fn prepare(
-    data: Res<RaindropsData>,
-    mut views: Query<(
-        Entity,
-        &mut RenderPhase<PostProcessingPhaseItem>,
-        &Order<Raindrops>,
-    )>,
-    draw_functions: Res<DrawFunctions<PostProcessingPhaseItem>>,
-) {
-    for (entity, mut phase, order) in views.iter_mut() {
-        let draw_function = draw_functions
-            .read()
-            .id::<DrawPostProcessingEffect<Raindrops>>();
-
-        phase.add(PostProcessingPhaseItem {
-            entity,
-            sort_key: (*order).into(),
-            draw_function,
-            pipeline_id: data.pipeline_id,
-        });
+            .add_systems(Render, queue.in_set(RenderSystems::PrepareBindGroups));
     }
 }
 
 fn queue(
     render_device: Res<RenderDevice>,
+    pipeline_cache: Res<PipelineCache>,
     data: Res<RaindropsData>,
     texture_handle: Res<RaindropsTextureHandle>,
     mut bind_group: ResMut<UniformBindGroup<Raindrops>>,
     uniforms: Res<ComponentUniforms<Raindrops>>,
-    images: Res<RenderAssets<Image>>,
+    images: Res<RenderAssets<GpuImage>>,
     views: Query<Entity, With<Raindrops>>,
 ) {
     bind_group.inner = None;
 
     if let (Some(uniforms), Some(raindrops_image)) =
-        (uniforms.binding(), images.get(&texture_handle))
+        (uniforms.uniforms().binding(), images.get(&**texture_handle))
     {
         if !views.is_empty() {
-            bind_group.inner = Some(render_device.create_bind_group(&BindGroupDescriptor {
-                label: Some("Raindrops Uniform Bind Group"),
-                layout: &data.layout,
-                entries: &[
+            bind_group.inner = Some(render_device.create_bind_group(
+                "Raindrops Uniform Bind Group",
+                &pipeline_cache.get_bind_group_layout(&data.layout),
+                &[
                     BindGroupEntry {
                         binding: 0,
                         resource: BindingResource::TextureView(&raindrops_image.texture_view),
@@ -208,7 +182,7 @@ fn queue(
                         resource: uniforms.clone(),
                     },
                 ],
-            }));
+            ));
         }
     }
 }
@@ -247,15 +221,17 @@ impl Display for Raindrops {
 }
 
 impl ExtractComponent for Raindrops {
-    type Query = (&'static Self, &'static Camera);
-    type Filter = ();
-    type Out = Self;
+    type QueryData = (&'static Self, Option<&'static Order<Self>>);
+    type QueryFilter = ();
+    type Out = (Self, Order<Self>);
 
-    fn extract_component((settings, camera): QueryItem<'_, Self::Query>) -> Option<Self::Out> {
-        if !camera.is_active {
-            return None;
-        }
-
-        Some(*settings)
+    fn extract_component(
+        (settings, order): QueryItem<'_, '_, Self::QueryData>,
+    ) -> Option<Self::Out> {
+        Some((*settings, order.copied().unwrap_or_else(|| Order::new(0.0))))
     }
+}
+
+impl SyncComponent for Raindrops {
+    type Target = (Self, Order<Self>);
 }

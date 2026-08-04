@@ -1,35 +1,34 @@
 use std::{f32::consts::PI, fmt::Display};
 
-use bevy::render::{render_phase::AddRenderCommand, RenderSet};
 pub(crate) use bevy::{
-    asset::load_internal_asset,
+    asset::{load_internal_asset, uuid_handle},
     ecs::query::QueryItem,
     prelude::*,
-    reflect::TypeUuid,
     render::{
+        GpuResourceAppExt, Render, RenderSystems,
         extract_component::{
             ComponentUniforms, ExtractComponent, ExtractComponentPlugin, UniformComponentPlugin,
         },
-        render_phase::{DrawFunctions, RenderPhase},
         render_resource::{
-            BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutEntry,
-            BindingType, BufferBindingType, CachedRenderPipelineId, ShaderStages, ShaderType,
+            BindGroupEntry, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingType,
+            BufferBindingType, CachedRenderPipelineId, PipelineCache, ShaderStages, ShaderType,
         },
         renderer::RenderDevice,
+        sync_component::SyncComponent,
     },
+    shader::Shader,
 };
 
-use crate::post_processing::{DrawPostProcessingEffect, UniformBindGroup};
+use super::Order;
+use crate::post_processing::UniformBindGroup;
 
-use super::{Order, PostProcessingPhaseItem};
-
-pub(crate) const CHROMATIC_ABERRATION_SHADER_HANDLE: HandleUntyped =
-    HandleUntyped::weak_from_u64(Shader::TYPE_UUID, 4357337502039082134);
+pub(crate) const CHROMATIC_ABERRATION_SHADER_HANDLE: Handle<Shader> =
+    uuid_handle!("00000000-0000-0000-3c78-5f5f37870496");
 
 #[derive(Resource)]
 pub(crate) struct ChromaticAberrationData {
     pub pipeline_id: CachedRenderPipelineId,
-    pub uniform_layout: BindGroupLayout,
+    pub uniform_layout: BindGroupLayoutDescriptor,
 }
 
 impl FromWorld for ChromaticAberrationData {
@@ -47,7 +46,7 @@ impl FromWorld for ChromaticAberrationData {
                 visibility: ShaderStages::FRAGMENT,
                 count: None,
             }],
-            CHROMATIC_ABERRATION_SHADER_HANDLE.typed(),
+            CHROMATIC_ABERRATION_SHADER_HANDLE.clone(),
         );
 
         ChromaticAberrationData {
@@ -72,47 +71,21 @@ impl bevy::prelude::Plugin for Plugin {
         );
 
         // This puts the uniform into the render world.
-        app.add_plugin(ExtractComponentPlugin::<ChromaticAberration>::default())
-            .add_plugin(UniformComponentPlugin::<ChromaticAberration>::default());
+        app.add_plugins((
+            ExtractComponentPlugin::<ChromaticAberration>::default(),
+            UniformComponentPlugin::<ChromaticAberration>::default(),
+        ));
 
         super::render_app(app)
-            .add_system(
-                super::extract_post_processing_camera_phases::<ChromaticAberration>.in_schedule(ExtractSchedule),
-            )
-            .init_resource::<ChromaticAberrationData>()
+            .init_gpu_resource::<ChromaticAberrationData>()
             .init_resource::<UniformBindGroup<ChromaticAberration>>()
-            .add_system(prepare.in_set(RenderSet::Prepare))
-            .add_system(queue.in_set(RenderSet::Queue))
-            .add_render_command::<PostProcessingPhaseItem, DrawPostProcessingEffect<ChromaticAberration>>(
-            );
-    }
-}
-
-fn prepare(
-    data: Res<ChromaticAberrationData>,
-    mut views: Query<(
-        Entity,
-        &mut RenderPhase<PostProcessingPhaseItem>,
-        &Order<ChromaticAberration>,
-    )>,
-    draw_functions: Res<DrawFunctions<PostProcessingPhaseItem>>,
-) {
-    for (entity, mut phase, order) in views.iter_mut() {
-        let draw_function = draw_functions
-            .read()
-            .id::<DrawPostProcessingEffect<ChromaticAberration>>();
-
-        phase.add(PostProcessingPhaseItem {
-            entity,
-            sort_key: (*order).into(),
-            draw_function,
-            pipeline_id: data.pipeline_id,
-        });
+            .add_systems(Render, queue.in_set(RenderSystems::PrepareBindGroups));
     }
 }
 
 fn queue(
     render_device: Res<RenderDevice>,
+    pipeline_cache: Res<PipelineCache>,
     data: Res<ChromaticAberrationData>,
     mut bind_group: ResMut<UniformBindGroup<ChromaticAberration>>,
     uniforms: Res<ComponentUniforms<ChromaticAberration>>,
@@ -120,16 +93,16 @@ fn queue(
 ) {
     bind_group.inner = None;
 
-    if let Some(uniforms) = uniforms.binding() {
+    if let Some(uniforms) = uniforms.uniforms().binding() {
         if !views.is_empty() {
-            bind_group.inner = Some(render_device.create_bind_group(&BindGroupDescriptor {
-                label: Some("ChromaticAberration Uniform Bind Group"),
-                layout: &data.uniform_layout,
-                entries: &[BindGroupEntry {
+            bind_group.inner = Some(render_device.create_bind_group(
+                "ChromaticAberration Uniform Bind Group",
+                &pipeline_cache.get_bind_group_layout(&data.uniform_layout),
+                &[BindGroupEntry {
                     binding: 0,
                     resource: uniforms.clone(),
                 }],
-            }));
+            ));
         }
     }
 }
@@ -186,7 +159,7 @@ impl Default for ChromaticAberration {
 impl Display for ChromaticAberration {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let base_angle = Vec2::new(1., 0.);
-        let angle = |color_dir| base_angle.angle_between(color_dir) * 180. / PI + 180.;
+        let angle = |color_dir| base_angle.angle_to(color_dir) * 180. / PI + 180.;
 
         write!(
             f,
@@ -202,15 +175,17 @@ impl Display for ChromaticAberration {
 }
 
 impl ExtractComponent for ChromaticAberration {
-    type Query = (&'static Self, &'static Camera);
-    type Filter = ();
-    type Out = Self;
+    type QueryData = (&'static Self, Option<&'static Order<Self>>);
+    type QueryFilter = ();
+    type Out = (Self, Order<Self>);
 
-    fn extract_component((settings, camera): QueryItem<'_, Self::Query>) -> Option<Self::Out> {
-        if !camera.is_active {
-            return None;
-        }
-
-        Some(*settings)
+    fn extract_component(
+        (settings, order): QueryItem<'_, '_, Self::QueryData>,
+    ) -> Option<Self::Out> {
+        Some((*settings, order.copied().unwrap_or_else(|| Order::new(0.0))))
     }
+}
+
+impl SyncComponent for ChromaticAberration {
+    type Target = (Self, Order<Self>);
 }

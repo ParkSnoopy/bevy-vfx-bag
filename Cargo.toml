@@ -1,6 +1,6 @@
 [package]
 name = "bevy-vfx-bag"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 description = "An assorted bag of visual effects for Bevy"
 categories = ["graphics", "game-development", "rendering"]
@@ -28,7 +28,7 @@ bevy = { version = "0.19", default-features = false, features = [
 ] }
 
 [dev-dependencies]
-bevy = { version = "0.19", features = ["tga"] }
+bevy = { version = "0.19", features = ["file_watcher", "tga"] }
 color-eyre = "0.6"
 image = "0.25"
 once_cell = "1"

@@ -1,4 +1,6 @@
 use bevy::{
+    asset::RenderAssetUsages,
+    color::palettes::css::{GOLD, SILVER},
     diagnostic::FrameTimeDiagnosticsPlugin,
     prelude::*,
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
@@ -25,12 +27,24 @@ impl Plugin for SaneDefaultsPlugin {
         app.add_plugins(
             DefaultPlugins
                 .set(AssetPlugin {
-                    watch_for_changes: true,
+                    watch_for_changes_override: Some(true),
                     ..default()
                 })
                 .set(ImagePlugin::default_nearest()),
         )
-        .add_system(bevy::window::close_on_esc);
+        .add_systems(Update, close_on_esc);
+    }
+}
+
+fn close_on_esc(
+    mut commands: Commands,
+    windows: Query<Entity, With<Window>>,
+    keyboard_input: Res<ButtonInput<KeyCode>>,
+) {
+    if keyboard_input.just_pressed(KeyCode::Escape) {
+        for window in &windows {
+            commands.entity(window).despawn();
+        }
     }
 }
 
@@ -59,11 +73,9 @@ pub(crate) struct ShouldAdd3dCameraBundle(bool);
 impl Plugin for ShapesExamplePlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(ShouldAdd3dCameraBundle(self.add_3d_camera_bundle))
-            .add_plugin(FrameTimeDiagnosticsPlugin::default())
-            .add_startup_system(shapes::setup)
-            .add_startup_system(ui::setup)
-            .add_system(shapes::rotate)
-            .add_system(ui::fps_text_update);
+            .add_plugins(FrameTimeDiagnosticsPlugin::default())
+            .add_systems(Startup, (shapes::setup, ui::setup))
+            .add_systems(Update, (shapes::rotate, ui::fps_text_update));
     }
 }
 
@@ -88,82 +100,71 @@ mod shapes {
         });
 
         let shapes = [
-            meshes.add(shape::Cube::default().into()),
-            meshes.add(shape::Box::default().into()),
-            meshes.add(shape::Capsule::default().into()),
-            meshes.add(shape::Torus::default().into()),
-            meshes.add(shape::Icosphere::default().try_into().unwrap()),
-            meshes.add(shape::UVSphere::default().into()),
+            meshes.add(Cuboid::default()),
+            meshes.add(Cuboid::new(1.0, 0.5, 1.5)),
+            meshes.add(Capsule3d::default()),
+            meshes.add(Torus::default()),
+            meshes.add(Sphere::new(0.5)),
+            meshes.add(Sphere::new(0.75)),
         ];
 
         let num_shapes = shapes.len();
 
         for (i, shape) in shapes.into_iter().enumerate() {
             commands
-                .spawn(PbrBundle {
-                    mesh: shape.clone(),
-                    material: debug_material.clone(),
-                    transform: Transform::from_xyz(
+                .spawn((
+                    Mesh3d(shape.clone()),
+                    MeshMaterial3d(debug_material.clone()),
+                    Transform::from_xyz(
                         -X_EXTENT / 2. + i as f32 / (num_shapes - 1) as f32 * X_EXTENT,
                         2.0,
                         0.0,
                     )
                     .with_rotation(Quat::from_rotation_x(-PI / 4.)),
-                    ..default()
-                })
+                ))
                 .insert(Shape);
 
             commands
-                .spawn(PbrBundle {
-                    mesh: shape,
-                    material: debug_material.clone(),
-                    transform: Transform::from_xyz(
+                .spawn((
+                    Mesh3d(shape),
+                    MeshMaterial3d(debug_material.clone()),
+                    Transform::from_xyz(
                         -X_EXTENT / 2. + i as f32 / (num_shapes - 1) as f32 * X_EXTENT,
                         2.0,
                         0.0,
                     )
                     .with_rotation(Quat::from_rotation_x(-PI / 4.)),
-                    ..default()
-                })
+                ))
                 .insert(Shape);
         }
 
-        commands.spawn(PointLightBundle {
-            point_light: PointLight {
+        commands.spawn((
+            PointLight {
                 intensity: 9000.0,
                 range: 100.,
-                shadows_enabled: true,
+                shadow_maps_enabled: true,
                 ..default()
             },
-            transform: Transform::from_xyz(8.0, 16.0, 8.0),
-            ..default()
-        });
+            Transform::from_xyz(8.0, 16.0, 8.0),
+        ));
 
         // ground plane
-        commands.spawn(PbrBundle {
-            mesh: meshes.add(
-                shape::Plane {
-                    size: 50.,
-                    ..default()
-                }
-                .into(),
-            ),
-            material: materials.add(Color::SILVER.into()),
-            ..default()
-        });
+        commands.spawn((
+            Mesh3d(meshes.add(Plane3d::default().mesh().size(50., 50.))),
+            MeshMaterial3d(materials.add(Color::from(SILVER))),
+        ));
 
         if add_3d_camera_bundle.0 {
-            commands.spawn(Camera3dBundle {
-                transform: Transform::from_xyz(0.0, 6., 12.0)
-                    .looking_at(Vec3::new(0., 1., 0.), Vec3::Y),
-                ..default()
-            });
+            commands.spawn((
+                Camera3d::default(),
+                Transform::from_xyz(0.0, 6., 12.0).looking_at(Vec3::new(0., 1., 0.), Vec3::Y),
+            ));
         }
     }
 
     pub(crate) fn rotate(mut query: Query<&mut Transform, With<Shape>>, time: Res<Time>) {
         for mut transform in &mut query {
-            transform.rotate_y(time.delta_seconds() / 2.);
+            transform.rotate_y(time.delta_secs() / 2.);
         }
     }
 
@@ -192,6 +193,7 @@ mod shapes {
             TextureDimension::D2,
             &texture_data,
             TextureFormat::Rgba8UnormSrgb,
+            RenderAssetUsages::default(),
         )
     }
 }
@@ -201,7 +203,7 @@ mod shapes {
 ////////////////////////////////////////////////////////////////////////////////
 
 mod ui {
-    use bevy::diagnostic::{Diagnostics, FrameTimeDiagnosticsPlugin};
+    use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 
     use super::*;
 
@@ -211,47 +213,34 @@ mod ui {
 
     pub(crate) fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         // Text with multiple sections
-        commands
-            .spawn(
-                // Create a TextBundle that has a Text with a list of sections.
-                TextBundle::from_sections([
-                    TextSection::new(
-                        "FPS: ",
-                        TextStyle {
-                            font: asset_server.load("fonts/FiraSans-Bold.ttf"),
-                            font_size: 40.0,
-                            color: Color::WHITE,
-                        },
-                    ),
-                    TextSection::from_style(TextStyle {
-                        font: asset_server.load("fonts/FiraMono-Medium.ttf"),
-                        font_size: 40.0,
-                        color: Color::GOLD,
-                    }),
-                ])
-                .with_style(Style {
-                    align_self: AlignSelf::FlexEnd,
-                    position_type: PositionType::Absolute,
-                    position: UiRect {
-                        top: Val::Px(5.0),
-                        right: Val::Px(15.0),
-                        ..default()
-                    },
-                    ..default()
-                }),
-            )
-            .insert(FpsText);
+        commands.spawn((
+            Text::new("FPS: "),
+            TextFont {
+                font: asset_server.load("fonts/FiraMono-Medium.ttf").into(),
+                font_size: FontSize::Px(40.0),
+                ..default()
+            },
+            TextColor(GOLD.into()),
+            Node {
+                align_self: AlignSelf::FlexEnd,
+                position_type: PositionType::Absolute,
+                top: px(5),
+                right: px(15),
+                ..default()
+            },
+            FpsText,
+        ));
     }
 
     pub(crate) fn fps_text_update(
-        diagnostics: Res<Diagnostics>,
+        diagnostics: Res<DiagnosticsStore>,
         mut query: Query<&mut Text, With<FpsText>>,
     ) {
         for mut text in &mut query {
-            if let Some(fps) = diagnostics.get(FrameTimeDiagnosticsPlugin::FPS) {
+            if let Some(fps) = diagnostics.get(&FrameTimeDiagnosticsPlugin::FPS) {
                 if let Some(average) = fps.average() {
                     // Update the value of the second section
-                    text.sections[1].value = format!("{average:.2}");
+                    **text = format!("FPS: {average:.2}");
                 }
             }
         }

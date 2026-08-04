@@ -1,6 +1,7 @@
 #import bevy_core_pipeline::fullscreen_vertex_shader
 #import bevy_render::globals
-#import bevy_pbr::utils
+
+const PI: f32 = 3.141592653589793;
 
 @group(0) @binding(0)
 var source: texture_2d<f32>;

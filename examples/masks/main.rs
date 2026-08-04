@@ -3,42 +3,42 @@ mod examples_common;
 
 use bevy::prelude::*;
 use bevy_vfx_bag::{
-    post_processing::masks::{Mask, MaskVariant},
     BevyVfxBagPlugin,
+    post_processing::masks::{Mask, MaskVariant},
 };
 
 fn main() {
     let mut app = App::new();
 
-    app.add_plugin(examples_common::SaneDefaultsPlugin)
-        .add_plugin(examples_common::ShapesExamplePlugin::without_3d_camera())
-        .add_plugin(BevyVfxBagPlugin::default())
-        .add_startup_system(startup)
-        .add_system(update)
-        .add_system(examples_common::print_on_change::<Mask>)
+    app.add_plugins(examples_common::SaneDefaultsPlugin)
+        .add_plugins(examples_common::ShapesExamplePlugin::without_3d_camera())
+        .add_plugins(BevyVfxBagPlugin::default())
+        .add_systems(Startup, startup)
+        .add_systems(Update, (update, examples_common::print_on_change::<Mask>))
         .run();
 }
 
 fn startup(mut commands: Commands) {
-    info!("Press [1|2|3] to change which mask is in use, [Up|Down] to change strenght, [L|H] to go low/high [PgUp/PgDown] to fade in/out the mask");
+    info!(
+        "Press [1|2|3] to change which mask is in use, [Up|Down] to change strenght, [L|H] to go low/high [PgUp/PgDown] to fade in/out the mask"
+    );
 
     commands
-        .spawn(Camera3dBundle {
-            transform: Transform::from_xyz(0.0, 6., 12.0)
-                .looking_at(Vec3::new(0., 1., 0.), Vec3::Y),
-            ..default()
-        })
+        .spawn((
+            Camera3d::default(),
+            Transform::from_xyz(0.0, 6., 12.0).looking_at(Vec3::new(0., 1., 0.), Vec3::Y),
+        ))
         .insert(Mask::default());
 }
 
-fn update(keyboard_input: Res<Input<KeyCode>>, mut query: Query<&mut Mask, With<Camera>>) {
-    let mut mask = query.single_mut();
+fn update(keyboard_input: Res<ButtonInput<KeyCode>>, mut query: Query<&mut Mask, With<Camera>>) {
+    let mut mask = query.single_mut().expect("exactly one camera");
 
-    if keyboard_input.just_pressed(KeyCode::Key1) {
+    if keyboard_input.just_pressed(KeyCode::Digit1) {
         *mask = Mask::square();
-    } else if keyboard_input.just_pressed(KeyCode::Key2) {
+    } else if keyboard_input.just_pressed(KeyCode::Digit2) {
         *mask = Mask::crt();
-    } else if keyboard_input.just_pressed(KeyCode::Key3) {
+    } else if keyboard_input.just_pressed(KeyCode::Digit3) {
         *mask = Mask::vignette();
     };
 
@@ -49,9 +49,9 @@ fn update(keyboard_input: Res<Input<KeyCode>>, mut query: Query<&mut Mask, With<
         MaskVariant::Vignette => 0.05,
     };
 
-    if keyboard_input.pressed(KeyCode::Up) {
+    if keyboard_input.pressed(KeyCode::ArrowUp) {
         mask.strength += increment();
-    } else if keyboard_input.pressed(KeyCode::Down) {
+    } else if keyboard_input.pressed(KeyCode::ArrowDown) {
         mask.strength -= increment();
     };
 
@@ -76,9 +76,9 @@ fn update(keyboard_input: Res<Input<KeyCode>>, mut query: Query<&mut Mask, With<
         MaskVariant::Vignette => 1.5,
     };
 
-    if keyboard_input.just_pressed(KeyCode::L) {
+    if keyboard_input.just_pressed(KeyCode::KeyL) {
         mask.strength = low();
-    } else if keyboard_input.just_pressed(KeyCode::H) {
+    } else if keyboard_input.just_pressed(KeyCode::KeyH) {
         mask.strength = high();
     };
 }
